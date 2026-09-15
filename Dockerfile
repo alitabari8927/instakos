@@ -1,15 +1,3 @@
-# --- Stage 1: build a wheel from the uploaded source -----------------------
-FROM python:3.12-slim AS builder
-
-WORKDIR /build
-COPY . /build
-
-# Build an actual wheel (instead of `pip install .` in place) so nothing
-# about the source tree's location can leak into the final image.
-RUN pip install --no-cache-dir --upgrade pip build \
-    && python -m build --wheel --outdir /tmp/dist
-
-# --- Stage 2: runtime image, no source tree present -------------------------
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,15 +5,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /tmp/dist /tmp/dist
-RUN pip install --no-cache-dir /tmp/dist/*.whl && rm -rf /tmp/dist
+# Install runtime dependencies directly (mirrors [project.dependencies] in
+# pyproject.toml). We deliberately do NOT `pip install .` / build a wheel:
+# the hatchling wheel build was silently dropping insto/__init__.py in this
+# environment (cause unconfirmed), so instead we install deps by name and
+# place the insto source on the Python path ourselves below. This sidesteps
+# the packaging step entirely rather than depending on debugging it further.
+RUN pip install --no-cache-dir \
+        "hikerapi>=0.1.0" \
+        "httpx>=0.27" \
+        "prompt_toolkit>=3.0.43" \
+        "rich>=13.7" \
+        "tomli-w>=1.0" \
+        "tqdm>=4.66"
 
-# Build-time sanity check + self-heal (see scripts/_build_verify.py): prints
-# what actually landed in site-packages, patches __init__.py/_version.py if
-# insto.__version__ is missing, and fails the BUILD (not a later `docker
-# run`) if it still can't be fixed.
-COPY scripts/_build_verify.py /tmp/_build_verify.py
-RUN python3 /tmp/_build_verify.py && rm /tmp/_build_verify.py
+# Copy the actual insto package source straight into site-packages.
+COPY insto /usr/local/lib/python3.12/site-packages/insto
+
+# Recreate the `insto` console-script entry point that `pip install .`
+# would normally generate (see [project.scripts] in pyproject.toml).
+RUN printf '#!/usr/local/bin/python3\nimport sys\nfrom insto.cli import main\n\nif __name__ == "__main__":\n    sys.exit(main())\n' \
+        > /usr/local/bin/insto \
+    && chmod +x /usr/local/bin/insto
+
+# Build-time sanity check: fail here (not at `docker run`) if something
+# about the package is broken.
+RUN python3 -c "import insto; print('insto package OK:', insto.__version__, insto.__file__)" \
+    && python3 -c "from insto.cli import main; print('insto.cli import OK')"
 
 WORKDIR /app
 
