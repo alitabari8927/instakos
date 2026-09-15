@@ -69,6 +69,16 @@ case "$MODE" in
       exit 1
     fi
     echo "[entrypoint] running: insto ${INSTO_ONESHOT_ARGS}"
+    # shellcheck disable=SC2086
+    last_word=$(printf '%s\n' "${INSTO_ONESHOT_ARGS}" | awk '{print $NF}')
+    # Remove any stale output file from a previous run BEFORE running insto.
+    # Without this, a failed/crashed run on a restart (the Volume under
+    # /data persists across restarts) would silently re-send the leftover
+    # file from an earlier successful run instead of skipping the send.
+    if [ "$last_word" != "-" ] && [ -n "$last_word" ] && [ -f "$last_word" ]; then
+        echo "[entrypoint] removing stale output file from a previous run: $last_word"
+        rm -f "$last_word"
+    fi
     # Not `exec` here: we need to run to completion, then optionally send
     # the resulting file to Telegram, then exit with insto's own status.
     set +e
@@ -79,8 +89,6 @@ case "$MODE" in
     if [ $status -ne 0 ]; then
         echo "[entrypoint] insto exited with status $status" >&2
     fi
-    # shellcheck disable=SC2086
-    last_word=$(printf '%s\n' "${INSTO_ONESHOT_ARGS}" | awk '{print $NF}')
     send_to_telegram "$last_word"
     exit $status
     ;;
